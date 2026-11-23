@@ -182,6 +182,52 @@ div[role="dialog"] h2, div[role="dialog"] p { color:var(--ink); }
   .kpi .kv { font-size:1.4rem; } .stTabs [data-baseweb="tab"] { padding:0 12px; }
 }
 @media (prefers-reduced-motion: reduce) { .card, .btn, .act, .live i, .p-ok i { transition:none !important; animation:none !important; } }
+
+/* ================= 긴급 · 병원 느낌 ================= */
+:root { --red:#e5383b; --red-d:#b3121a; }
+/* 배경: 은은한 의료 십자 패턴 */
+.stApp { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='56'%3E%3Cpath d='M28 21v14M21 28h14' stroke='%230f5fc2' stroke-opacity='.07' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E") !important; }
+/* 상단 긴급 바 */
+.topbar { background:linear-gradient(90deg,var(--red-d),var(--red) 60%,#ff5a5f); box-shadow:0 2px 10px rgba(179,18,26,.35); position:relative; }
+.topbar:after { content:""; position:absolute; left:0; right:0; bottom:0; height:3px;
+  background:repeating-linear-gradient(135deg,#ffd166 0 12px,transparent 12px 24px); opacity:.85; }
+.topbar b { color:#fff; background:rgba(0,0,0,.25); padding:1px 8px; border-radius:6px; font-size:.92rem; }
+.siren { display:inline-block; width:10px; height:10px; border-radius:50%; background:#fff; margin-right:8px; animation:siren 1s infinite; vertical-align:middle; }
+@keyframes siren { 0%,100%{ box-shadow:0 0 0 0 rgba(255,255,255,.9); opacity:1 } 50%{ box-shadow:0 0 0 8px rgba(255,255,255,0); opacity:.35 } }
+/* 로고: 병원 십자 마크 */
+.logo .mk { background:#fff; border:2.5px solid var(--red); color:var(--red); box-shadow:0 3px 8px rgba(229,56,59,.25); }
+.gnb { border-bottom:3px solid var(--red); }
+/* 히어로: 응급 구역 + 심전도 */
+.hero { position:relative; overflow:hidden; border-left:7px solid var(--red); background:linear-gradient(120deg,#fff5f5 0%,#f2f9ff 50%,#e3f7f5 100%); }
+.hero:before { content:"\271A"; position:absolute; right:-18px; top:-48px; font-size:260px; line-height:1; color:rgba(229,56,59,.07); pointer-events:none; }
+.hero:after { content:""; position:absolute; left:0; right:0; bottom:0; height:64px; pointer-events:none; opacity:.22;
+  background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='420' height='64' viewBox='0 0 420 64'%3E%3Cpolyline fill='none' stroke='%23e5383b' stroke-width='2.5' stroke-linejoin='round' points='0,36 130,36 145,36 156,10 168,58 180,22 190,36 420,36'/%3E%3C/svg%3E") repeat-x;
+  animation:ecg 5s linear infinite; }
+@keyframes ecg { from{ background-position-x:0 } to{ background-position-x:-420px } }
+.hero-in { position:relative; z-index:1; }
+.em-tag { display:inline-block; background:var(--red); color:#fff; font-size:.7rem; font-weight:800; letter-spacing:1.2px; padding:2px 8px; border-radius:5px; margin-right:8px; animation:blink 1.4s infinite; }
+.eyebrow { border-color:#f4c7c3; color:var(--red-d); }
+.hero .h1 { color:#0a2f66; }
+.btn-red { animation:glow 2s infinite; }
+@keyframes glow { 0%,100%{ box-shadow:0 6px 14px rgba(229,56,59,.3) } 50%{ box-shadow:0 6px 22px rgba(229,56,59,.65) } }
+.stat-card { border-top:5px solid var(--red); }
+.stat-card .t:before { content:"\25CF"; color:var(--red); margin-right:6px; animation:blink 1.4s infinite; }
+/* KPI / 탭 */
+.kpi.red { background:linear-gradient(#fff,#fff6f5); border-color:#f4c7c3; }
+.stTabs [data-baseweb="tab-list"] { border-top:3px solid var(--blue) !important; }
+.stTabs [data-baseweb="tab"]:first-child p { color:var(--red-d) !important; }
+.stTabs [data-baseweb="tab"]:first-child[aria-selected="true"] { box-shadow:inset 0 -3px 0 var(--red); }
+/* 카드: 병원 차트 느낌 */
+.card.lv-full { background:linear-gradient(#fff,#fff7f6); border-color:#f4c7c3; }
+.card.lv-ok { background:linear-gradient(#fff,#f6fdf9); }
+.card .c-head:before { content:none; }
+.p-full i { animation:blink 1s infinite; }
+/* 응급실 탭 경고 배너 */
+.em-banner { display:flex; align-items:center; gap:12px; background:#fff1f0; border:1px solid #f4c7c3; border-left:6px solid var(--red);
+  border-radius:12px; padding:12px 16px; margin:0 0 12px; color:#7a1115; font-size:.9rem; font-weight:600; line-height:1.5; }
+.em-banner .ic { font-size:1.4rem; animation:blink 1.2s infinite; }
+.em-banner a { color:#fff !important; background:var(--red); padding:6px 14px; border-radius:8px; text-decoration:none !important; font-weight:800; margin-left:auto; white-space:nowrap; }
+@media (prefers-reduced-motion: reduce) { .siren, .hero:after, .em-tag, .btn-red, .em-banner .ic, .stat-card .t:before, .p-full i { animation:none !important; } }
 </style>
 """
 
@@ -512,14 +558,14 @@ def hero():
     wd = "월화수목금토일"[now.weekday()]
 
     md(
-        '<div class="topbar"><span>🚨 응급 상황이면 망설이지 말고 <b>119</b>로 연락하세요</span>'
+        '<div class="topbar"><span><span class="siren"></span>응급 상황이면 망설이지 말고 <b>119</b>로 연락하세요</span>'
         '<span><a href="tel:1339">📞 1339 응급의료정보센터</a>'
         '<a href="https://www.e-gen.or.kr" target="_blank" rel="noopener">응급의료포털</a></span></div>'
         '<div class="gnb">'
         f'<div class="logo"><div class="mk">✚</div><div>{BRAND}<small>실시간 병원·응급실·약국 안내</small></div></div>'
         f'<div class="live"><i></i>실시간 · {now.month}월 {now.day}일 ({wd}) {now:%H:%M} 기준</div></div>'
         '<div class="hero"><div class="hero-in"><div>'
-        '<div class="eyebrow">24시간 응급실 · 야간·휴일 약국까지</div>'
+        '<div class="eyebrow"><span class="em-tag">EMERGENCY</span>24시간 응급실 · 야간·휴일 약국까지</div>'
         '<div class="h1">가까운 병원·응급실·약국,<br>지금 바로 확인하세요</div>'
         '<div class="sub">병상 현황과 진료·영업 시간을 한 곳에서 확인하고,<br>전화와 길찾기까지 바로 연결해 드려요.</div>'
         '<div class="hero-actions">'
@@ -547,6 +593,10 @@ def tab_er():
     now = datetime.now(KST)
     rows = er_data()
 
+    md('<div class="em-banner"><span class="ic">🚨</span>'
+       '<span>생명이 위급하면 병원에 직접 가기 전에 먼저 <b>119</b>에 연락하세요.<br>'
+       '<span style="font-weight:500">구급대가 가장 적합한 응급실로 안내해 드려요.</span></span>'
+       '<a href="tel:119">📞 119 전화</a></div>')
     with st.container(key="panel_er"):
         city, dist = region_ui(rows, "er")
         c1, c2 = st.columns([1, 1])
@@ -672,49 +722,7 @@ def tab_pharmacy(now, is_holiday):
 
 
 # =====================================================================
-# 탭 4: 병상 관리 (UPDATE 시연)
-# =====================================================================
-def tab_admin():
-    md('<div class="sec">병상 관리 (시연용)</div>'
-       '<div class="meta">병상 수를 바꾸면 DB에 즉시 반영되고, 응급실 탭에 실시간으로 보여요.</div>')
-    pw = st.text_input("관리자 비밀번호", type="password", key="adm_pw")
-    if not pw:
-        st.info("비밀번호는 supabase_api_setup.sql 의 update_er_beds 함수에 설정한 값이에요.")
-        return
-
-    rows = sorted(er_data(), key=lambda r: r["hospital_id"])
-    pick = st.selectbox("응급실 선택", rows, key="adm_pick",
-                        format_func=lambda r: f'{r["hospital_name"]} · 현재 {r["available_beds"]}병상 ({r["status"]})')
-
-    def save(beds: int):
-        try:
-            client().rpc("update_er_beds", {"p_hospital_id": int(pick["hospital_id"]),
-                                            "p_beds": int(max(beds, 0)), "p_pw": pw}).execute()
-        except Exception as e:  # noqa: BLE001
-            st.error("저장에 실패했어요. 비밀번호가 맞는지 확인하세요.")
-            st.caption(str(e)[:200])
-            return False
-        st.cache_data.clear()
-        return True
-
-    c1, c2, c3 = st.columns(3)
-    done = False
-    if c1.button("➖ 환자 입실 (병상 -1)", use_container_width=True):
-        done = save(pick["available_beds"] - 1)
-    if c2.button("➕ 환자 퇴실 (병상 +1)", use_container_width=True):
-        done = save(pick["available_beds"] + 1)
-    with c3:
-        new_beds = st.number_input("병상 수", min_value=0, max_value=200, value=pick["available_beds"],
-                                   label_visibility="collapsed", key=f"adm_beds_{pick['hospital_id']}")
-        if st.button("💾 이 값으로 저장", use_container_width=True):
-            done = save(new_beds)
-    if done:
-        st.toast("저장했어요 ✅")
-        st.rerun()
-
-
-# =====================================================================
-# 탭 5: 서비스 정보
+# 탭 4: 서비스 정보
 # =====================================================================
 def tab_info():
     md('<div class="sec">이 서비스는 이렇게 동작해요</div>'
@@ -764,7 +772,7 @@ def main():
     c1.caption("📍 공휴일은 자동으로 알 수 없어서, 아래 스위치로 직접 켜 주세요. (주말은 자동)")
     is_holiday = c2.toggle("오늘은 휴일(공휴일 포함)", key="is_holiday")
 
-    t1, t2, t3, t4, t5 = st.tabs(["🚑 응급실", "🏥 병원 찾기", "💊 약국", "🔧 병상 관리", "ℹ️ 정보"])
+    t1, t2, t3, t4 = st.tabs(["🚑 응급실", "🏥 병원 찾기", "💊 약국", "ℹ️ 정보"])
     with t1:
         tab_er()
     with t2:
@@ -772,8 +780,6 @@ def main():
     with t3:
         tab_pharmacy(now, is_holiday)
     with t4:
-        tab_admin()
-    with t5:
         tab_info()
 
     md('<div class="disc">※ 학습(PBL)용 샘플 데이터 기반 서비스이며 실제 의료 판단을 대체하지 않아요.<br>'
