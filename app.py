@@ -1,125 +1,224 @@
 """
-실시간 병원·응급실·약국 조회 시스템 (Streamlit + Supabase PostgreSQL)
-- 응급실 현황 / 병원 검색·상세 / 약국 검색 / 병상 관리(데모)
+MediNow · 실시간 병원·응급실·약국 조회 시스템
+Streamlit + Supabase (URL + anon key)
 """
 import html
 import re
-from datetime import datetime
+from datetime import datetime, time
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
-from sqlalchemy import create_engine, text
+from supabase import create_client
 
+BRAND = "MediNow"
 KST = ZoneInfo("Asia/Seoul")
-STALE_MIN = 60  # 이 시간(분) 넘게 갱신 안 된 병상 정보는 경고 표시
+STALE_MIN = 60          # 병상 정보가 이 시간(분) 이상 갱신 안 되면 경고
+BED_BAR_MAX = 12        # 병상 막대그래프 100% 기준
 
-st.set_page_config(page_title="응급·병원·약국 찾기", page_icon="🚑", layout="wide")
+st.set_page_config(
+    page_title=f"{BRAND} · 병원·응급실·약국 찾기",
+    page_icon="🏥",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 
+# =====================================================================
+# 스타일
+# =====================================================================
 CSS = """
 <style>
-.block-container{padding-top:1.2rem;max-width:1200px;}
-.emg{background:#d92d20;color:#fff;border-radius:14px;padding:12px 18px;display:flex;flex-wrap:wrap;
-     gap:6px 20px;align-items:center;justify-content:space-between;margin-bottom:12px}
-.emg .big{font-size:1.15rem;font-weight:800}
-.emg a{color:#fff;font-weight:700;text-decoration:underline}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px;margin:8px 0 16px}
-.card{border:1px solid rgba(128,128,128,.3);background:rgba(128,128,128,.07);border-radius:14px;
-      padding:14px 16px;border-left:6px solid #98a2b3}
-.card.ok{border-left-color:#12b76a}.card.full{border-left-color:#f04438}.card.none{border-left-color:#98a2b3}
-.card h4{margin:0 0 6px;font-size:1.05rem}
-.badge{display:inline-block;padding:2px 9px;border-radius:999px;font-size:.75rem;font-weight:700;
-       color:#fff;margin:0 4px 4px 0}
-.b-ok{background:#12b76a}.b-full{background:#f04438}.b-gray{background:#667085}
-.b-blue{background:#2e90fa}.b-amber{background:#f79009}
-.beds{font-size:2rem;font-weight:800;line-height:1}
-.muted{opacity:.7;font-size:.82rem}
-.row{margin:4px 0;font-size:.9rem}
-.card a{text-decoration:none}
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css');
+
+.stApp, .stMarkdown, .stApp p, .stApp label, .stApp button, .stApp input, .stApp textarea,
+.stApp h1, .stApp h2, .stApp h3 {
+  font-family: 'Pretendard', -apple-system, 'Noto Sans KR', 'Malgun Gothic', sans-serif;
+}
+#MainMenu, footer, [data-testid="stToolbar"], [data-testid="stDecoration"],
+header[data-testid="stHeader"] { display: none !important; }
+.stApp { background: #f3f5f9; }
+.block-container { max-width: 1180px; padding: 1rem 1rem 4rem; }
+
+/* ---------- Hero ---------- */
+.hero { background: linear-gradient(135deg,#1d4ed8 0%,#2563eb 50%,#0ea5e9 100%); color:#fff;
+  border-radius: 24px; padding: 24px 28px 26px; position: relative; overflow: hidden; margin-bottom: 14px; }
+.hero:after { content:""; position:absolute; right:-70px; top:-70px; width:280px; height:280px;
+  border-radius:50%; background: rgba(255,255,255,.10); }
+.hero:before { content:""; position:absolute; right:90px; bottom:-90px; width:200px; height:200px;
+  border-radius:50%; background: rgba(255,255,255,.07); }
+.hero > * { position: relative; z-index: 1; }
+.hero-top { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; gap:10px; flex-wrap:wrap; }
+.brand { font-weight:800; font-size:1.1rem; letter-spacing:-.2px; }
+.live { display:inline-flex; align-items:center; gap:8px; background:rgba(255,255,255,.18);
+  padding:6px 13px; border-radius:999px; font-size:.8rem; font-weight:600; }
+.live i { width:8px; height:8px; border-radius:50%; background:#4ade80;
+  animation: pulse 1.8s infinite; }
+@keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(74,222,128,.7)} 70%{box-shadow:0 0 0 9px rgba(74,222,128,0)} 100%{box-shadow:0 0 0 0 rgba(74,222,128,0)} }
+.hero .h1 { font-size:1.95rem; line-height:1.28; font-weight:800; letter-spacing:-.6px; margin:0 0 8px; }
+.hero .sub { opacity:.92; font-size:.98rem; margin:0 0 18px; }
+.hero-actions { display:flex; flex-wrap:wrap; gap:10px; }
+.btn { display:inline-flex; align-items:center; gap:7px; padding:11px 18px; border-radius:13px;
+  font-weight:700; font-size:.92rem; text-decoration:none !important; }
+.btn-red { background:#ef4444; color:#fff !important; box-shadow:0 6px 16px rgba(239,68,68,.35); }
+.btn-ghost { background:rgba(255,255,255,.16); color:#fff !important; border:1px solid rgba(255,255,255,.35); }
+
+/* ---------- KPI ---------- */
+.kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin:0 0 16px; }
+.kpi { background:#fff; border:1px solid #e6eaf1; border-radius:18px; padding:14px 16px;
+  box-shadow:0 1px 2px rgba(16,24,40,.04); }
+.kpi .kl { font-size:.78rem; color:#667085; font-weight:600; }
+.kpi .kv { font-size:1.75rem; font-weight:800; color:#101828; letter-spacing:-.6px; line-height:1.25; }
+.kpi .kv small { font-size:.9rem; color:#98a2b3; font-weight:600; letter-spacing:0; }
+.kpi .ks { font-size:.74rem; color:#98a2b3; }
+.kpi.red .kv { color:#d92d20; } .kpi.green .kv { color:#039855; }
+
+/* ---------- Tabs ---------- */
+.stTabs [data-baseweb="tab-list"] { gap:4px; background:#e8ecf3; padding:5px; border-radius:15px; margin-bottom:14px; overflow-x:auto; }
+.stTabs [data-baseweb="tab"] { height:42px; border-radius:11px; padding:0 18px; font-weight:700; color:#475467; background:transparent; white-space:nowrap; }
+.stTabs [aria-selected="true"] { background:#fff; color:#1d4ed8; box-shadow:0 1px 3px rgba(16,24,40,.14); }
+.stTabs [data-baseweb="tab-highlight"], .stTabs [data-baseweb="tab-border"] { display:none; }
+
+/* ---------- Filter panel ---------- */
+div[class*="st-key-panel"] { background:#fff; border:1px solid #e6eaf1; border-radius:18px; padding:14px 16px 8px; margin-bottom:12px; }
+.flabel { font-size:.78rem; font-weight:700; color:#667085; margin:2px 0 4px; }
+.stButton > button { border-radius:11px; font-weight:700; border:1px solid #d0d5dd; }
+
+/* ---------- Cards ---------- */
+.grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:14px; margin:6px 0 18px; }
+.card, div[class*="st-key-hc_"] { background:#fff; border:1px solid #e6eaf1; border-radius:18px; padding:16px 16px 14px;
+  box-shadow:0 1px 2px rgba(16,24,40,.04); transition: transform .15s ease, box-shadow .15s ease; }
+.card:hover, div[class*="st-key-hc_"]:hover { transform:translateY(-2px); box-shadow:0 10px 26px rgba(16,24,40,.10); }
+.c-head { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
+.c-name { font-weight:800; font-size:1.03rem; color:#101828; letter-spacing:-.3px; line-height:1.3; }
+.c-sub { font-size:.8rem; color:#667085; margin-top:2px; }
+.pill { display:inline-flex; align-items:center; gap:6px; font-size:.74rem; font-weight:700; padding:4px 10px; border-radius:999px; white-space:nowrap; }
+.pill i { width:7px; height:7px; border-radius:50%; background:currentColor; }
+.p-ok { background:#ecfdf3; color:#067647; } .p-ok i { animation: blink 1.6s infinite; }
+.p-low { background:#fffaeb; color:#b54708; }
+.p-full { background:#fef3f2; color:#b42318; }
+.p-off { background:#f2f4f7; color:#475467; }
+.p-blue { background:#eff6ff; color:#1d4ed8; }
+@keyframes blink { 50% { opacity:.25 } }
+.beds { display:flex; align-items:center; gap:14px; margin:14px 0 8px; }
+.beds .n { font-size:2.35rem; font-weight:800; line-height:1; letter-spacing:-1px; min-width:58px; }
+.n-ok { color:#12b76a; } .n-low { color:#f79009; } .n-full { color:#f04438; }
+.beds .bw { flex:1; }
+.beds .l { font-size:.74rem; color:#667085; font-weight:600; margin-bottom:6px; }
+.bar { height:8px; background:#eef1f6; border-radius:99px; overflow:hidden; }
+.bar span { display:block; height:100%; border-radius:99px; }
+.f-ok { background:#12b76a; } .f-low { background:#f79009; } .f-full { background:#f04438; }
+.meta { font-size:.84rem; color:#344054; margin:6px 0; line-height:1.5; }
+.chips { display:flex; flex-wrap:wrap; gap:5px; margin:9px 0 4px; }
+.chip { font-size:.73rem; font-weight:600; padding:3px 9px; border-radius:8px; background:#f2f4f7; color:#344054; }
+.chip.hl { background:#eff6ff; color:#1d4ed8; }
+.chip.am { background:#fffaeb; color:#b54708; }
+.acts { display:flex; gap:8px; margin-top:12px; }
+.act { flex:1; text-align:center; padding:10px 0; border-radius:12px; font-size:.84rem; font-weight:700;
+  text-decoration:none !important; background:#f2f4f7; color:#344054 !important; }
+.act.p { background:#2563eb; color:#fff !important; }
+.act.r { background:#ef4444; color:#fff !important; }
+.act.off { background:#f9fafb; color:#98a2b3 !important; }
+.foot { font-size:.72rem; color:#98a2b3; margin-top:10px; }
+.stale { color:#b54708; font-weight:700; }
+
+.sec { font-weight:800; font-size:1.05rem; margin:14px 0 6px; color:#101828; letter-spacing:-.3px; }
+.count { font-size:.9rem; color:#475467; margin:4px 0 4px; }
+.count b { color:#101828; }
+.empty { text-align:center; padding:46px 10px; background:#fff; border:1px dashed #cfd5e0; border-radius:18px; color:#667085; }
+.empty .ei { font-size:2rem; }
+.dl { display:grid; grid-template-columns:90px 1fr; gap:9px 12px; font-size:.92rem; margin:6px 0 12px; }
+.dl .k { color:#667085; font-weight:600; } .dl .v { color:#101828; }
+.box { background:#f8fafc; border:1px solid #e6eaf1; border-radius:16px; padding:14px 16px; }
+.disc { font-size:.76rem; color:#98a2b3; text-align:center; margin-top:26px; line-height:1.6; }
+
+@media (max-width: 640px) {
+  .block-container { padding: .6rem .6rem 3rem; }
+  .hero { padding: 20px 18px 22px; border-radius: 20px; }
+  .hero .h1 { font-size: 1.45rem; }
+  .kpi .kv { font-size: 1.4rem; }
+  .stTabs [data-baseweb="tab"] { padding: 0 12px; }
+}
 </style>
 """
 
-# ---------------------------------------------------------------------
-# DB 연결 / 쿼리
-# ---------------------------------------------------------------------
+# =====================================================================
+# Supabase 연결 / 데이터 로드
+# =====================================================================
 @st.cache_resource
-def get_engine():
-    return create_engine(st.secrets["DATABASE_URL"], pool_pre_ping=True, pool_size=3, max_overflow=2)
+def client():
+    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 
 
-@st.cache_data(ttl=30, show_spinner=False)
-def q(sql: str, params: dict | None = None) -> pd.DataFrame:
-    """SELECT 실행 (30초 캐시 → 병상 정보가 거의 실시간으로 반영됨)"""
-    with get_engine().connect() as conn:
-        return pd.read_sql(text(sql), conn, params=params or {})
+@st.cache_data(ttl=20, show_spinner=False)
+def fetch(table: str) -> list:
+    """뷰/테이블 전체 조회 (20초 캐시 → 병상 변동이 거의 실시간 반영)"""
+    return client().table(table).select("*").execute().data or []
 
 
-def execute(sql: str, params: dict) -> None:
-    with get_engine().begin() as conn:
-        conn.execute(text(sql), params)
-    st.cache_data.clear()
+def to_time(s):
+    if not s:
+        return None
+    p = str(s).split(":")
+    return time(int(p[0]), int(p[1]))
 
 
-# [INNER JOIN] 응급실 운영 병원만
-ER_SQL = """
-SELECT h.hospital_id, h.hospital_name, h.region, h.address, h.phone, h.hospital_type,
-       h.funeral_hall, e.status, e.available_beds, e.er_phone, e.update_time
-FROM hospital h
-INNER JOIN emergencyroom e ON h.hospital_id = e.hospital_id
-"""
-
-# [LEFT JOIN + 서브쿼리] 응급실 없는 병원 포함 + 진료과목 문자열 집계
-HOSPITAL_SQL = """
-SELECT h.hospital_id, h.hospital_name, h.region, h.address, h.phone, h.hospital_type,
-       h.open_time, h.close_time, h.holiday_open, h.funeral_hall,
-       e.er_id,
-       COALESCE(e.status, '응급실 미운영') AS er_status,
-       COALESCE(e.available_beds, 0)       AS available_beds,
-       e.er_phone, e.update_time,
-       (SELECT string_agg(d.dept_name, ', ' ORDER BY d.dept_id)
-          FROM hospital_department hd
-          JOIN department d ON d.dept_id = hd.dept_id
-         WHERE hd.hospital_id = h.hospital_id) AS departments
-FROM hospital h
-LEFT JOIN emergencyroom e ON h.hospital_id = e.hospital_id
-"""
-
-PHARMACY_SQL = """
-SELECT p.pharmacy_id, p.pharmacy_name, p.region, p.address, p.phone,
-       p.open_time, p.close_time, p.holiday_open
-FROM pharmacy p
-"""
+def to_dt(s):
+    if not s:
+        return None
+    return pd.to_datetime(s, utc=True).tz_convert(KST).to_pydatetime()
 
 
-# ---------------------------------------------------------------------
+def er_data() -> list:
+    rows = fetch("v_er_status")
+    for r in rows:
+        r["update_time"] = to_dt(r.get("update_time"))
+        r["available_beds"] = int(r.get("available_beds") or 0)
+    return rows
+
+
+def hospital_data() -> list:
+    rows = fetch("v_hospital_full")
+    for r in rows:
+        r["open_time"] = to_time(r.get("open_time"))
+        r["close_time"] = to_time(r.get("close_time"))
+        r["update_time"] = to_dt(r.get("update_time"))
+        r["available_beds"] = int(r.get("available_beds") or 0)
+        r["dept_list"] = r.get("dept_list") or []
+        r["has_er"] = r.get("er_id") is not None
+    return rows
+
+
+def pharmacy_data() -> list:
+    rows = fetch("pharmacy")
+    for r in rows:
+        r["open_time"] = to_time(r.get("open_time"))
+        r["close_time"] = to_time(r.get("close_time"))
+    return rows
+
+
+# =====================================================================
 # 헬퍼
-# ---------------------------------------------------------------------
+# =====================================================================
 def esc(v) -> str:
-    return "" if v is None or pd.isna(v) else html.escape(str(v))
+    return "" if v is None else html.escape(str(v))
 
 
-def tel(phone) -> str:
-    if phone is None or pd.isna(phone) or not str(phone).strip():
-        return "-"
-    digits = re.sub(r"[^0-9+]", "", str(phone))
-    return f'<a href="tel:{digits}">📞 {esc(phone)}</a>'
+def digits(p) -> str:
+    return re.sub(r"[^0-9+]", "", p or "")
 
 
-def map_url(address: str) -> str:
-    return "https://map.naver.com/p/search/" + quote(str(address))
+def map_link(addr) -> str:
+    return "https://map.naver.com/p/search/" + quote(addr or "")
 
 
 def hhmm(t) -> str:
-    return "-" if t is None or pd.isna(t) else t.strftime("%H:%M")
+    return "-" if t is None else t.strftime("%H:%M")
 
 
 def ago(ts, now):
-    """(표시문구, 오래됐는지) 반환"""
-    if ts is None or pd.isna(ts):
+    if ts is None:
         return "-", False
-    ts = pd.Timestamp(ts)
-    ts = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert(KST)
     mins = max(int((now - ts).total_seconds() // 60), 0)
     if mins < 1:
         label = "방금 전"
@@ -132,343 +231,501 @@ def ago(ts, now):
     return label, mins >= STALE_MIN
 
 
-def is_open(open_t, close_t, holiday_open, now, is_holiday) -> bool:
-    if open_t is None or close_t is None or pd.isna(open_t) or pd.isna(close_t):
+def is_open(o, c, hol, now, is_holiday) -> bool:
+    if o is None or c is None:
         return False
-    if is_holiday and holiday_open != "Y":
+    if is_holiday and hol != "Y":
         return False
-    return open_t <= now.time() < close_t
+    return o <= now.time().replace(second=0, microsecond=0) < c
 
 
-def grid(cards: list[str]) -> None:
+def minutes_left(c, now) -> int:
+    return (c.hour * 60 + c.minute) - (now.hour * 60 + now.minute)
+
+
+def fmt_left(m: int) -> str:
+    h, mm = divmod(m, 60)
+    if h and mm:
+        return f"{h}시간 {mm}분"
+    if h:
+        return f"{h}시간"
+    return f"{mm}분"
+
+
+def bed_level(r) -> str:
+    if r.get("status", r.get("er_status")) != "운영중" or r["available_beds"] <= 0:
+        return "full"
+    return "low" if r["available_beds"] <= 3 else "ok"
+
+
+LEVEL_TXT = {"ok": "수용 가능", "low": "여유 적음", "full": "포화"}
+
+
+def act(label, href, kind="", blank=False) -> str:
+    tgt = ' target="_blank" rel="noopener"' if blank else ""
+    return f'<a class="act {kind}" href="{href}"{tgt}>{label}</a>'
+
+
+def call_btn(phone, label="📞 전화", kind="p") -> str:
+    d = digits(phone)
+    return act(label, "tel:" + d, kind) if d else '<span class="act off">번호 없음</span>'
+
+
+def md(s: str) -> None:
+    st.markdown(s, unsafe_allow_html=True)
+
+
+def grid(cards: list) -> None:
     if not cards:
-        st.info("조건에 맞는 결과가 없습니다. 필터를 조정해 보세요.")
+        empty()
         return
-    st.markdown('<div class="grid">' + "".join(cards) + "</div>", unsafe_allow_html=True)
+    md('<div class="grid">' + "".join(cards) + "</div>")
 
 
-def region_filter(table: str, key: str):
-    regs = q(f"SELECT DISTINCT region FROM {table} ORDER BY region")["region"].tolist()
-    cities = sorted({r.split()[0] for r in regs})
-    c1, c2 = st.columns(2)
-    city = c1.selectbox("시·도", ["전체"] + cities, key=f"{key}_city")
-    dists = [r for r in regs if city == "전체" or r.split()[0] == city]
-    dist = c2.selectbox("시·군·구", ["전체"] + dists, key=f"{key}_dist")
+def empty(msg="조건에 맞는 결과가 없어요") -> None:
+    md(f'<div class="empty"><div class="ei">🔍</div><b>{msg}</b><br>필터를 조정해 보세요</div>')
+
+
+def in_region(r, city, dist) -> bool:
+    if dist != "전체":
+        return r["region"] == dist
+    if city != "전체":
+        return r["region"].startswith(city + " ")
+    return True
+
+
+def region_ui(rows: list, key: str):
+    cities = sorted({r["region"].split()[0] for r in rows})
+    md('<div class="flabel">지역</div>')
+    city = st.pills("시·도", ["전체"] + cities, selection_mode="single", default="전체",
+                    key=f"{key}_city", label_visibility="collapsed") or "전체"
+    dist = "전체"
+    if city != "전체":
+        dists = sorted({r["region"] for r in rows if r["region"].startswith(city + " ")})
+        dist = st.pills("시·군·구", ["전체"] + dists, selection_mode="single", default="전체",
+                        key=f"{key}_dist_{city}", label_visibility="collapsed",
+                        format_func=lambda v: v if v == "전체" else v.split(" ", 1)[1]) or "전체"
     return city, dist
 
 
-def region_where(alias: str, city: str, dist: str, where: list, params: dict) -> None:
-    if dist != "전체":
-        where.append(f"{alias}.region = :region")
-        params["region"] = dist
-    elif city != "전체":
-        where.append(f"split_part({alias}.region, ' ', 1) = :city")
-        params["city"] = city
-
-
-def with_where(sql: str, where: list) -> str:
-    return sql + (" WHERE " + " AND ".join(where) if where else "")
-
-
-# ---------------------------------------------------------------------
-# 카드 렌더링
-# ---------------------------------------------------------------------
-def er_card(r: dict, now) -> str:
-    beds = int(r["available_beds"])
-    ok = r["status"] == "운영중" and beds > 0
-    cls, badge = ("ok", '<span class="badge b-ok">수용 가능</span>') if ok else (
-        "full", '<span class="badge b-full">포화</span>')
+# =====================================================================
+# 카드 HTML
+# =====================================================================
+def er_card(r, now) -> str:
+    lv = bed_level(r)
+    beds = r["available_beds"]
     when, stale = ago(r["update_time"], now)
-    stale_badge = '<span class="badge b-amber">⚠ 정보 오래됨</span>' if stale else ""
-    funeral = '<span class="badge b-gray">장례식장</span>' if r.get("funeral_hall") == "Y" else ""
+    pct = min(beds / BED_BAR_MAX * 100, 100)
+    funeral = '<span class="chip">장례식장</span>' if r.get("funeral_hall") == "Y" else ""
+    foot = ("⚠ " if stale else "") + f"{when} 갱신" + (" · 전화로 꼭 확인하세요" if stale else "")
+    foot_cls = "foot stale" if stale else "foot"
     return (
-        f'<div class="card {cls}">'
-        f'<h4>{esc(r["hospital_name"])}</h4>'
-        f'{badge}<span class="badge b-blue">{esc(r["hospital_type"])}</span>{funeral}{stale_badge}'
-        f'<div class="row"><span class="beds">{beds}</span> <span class="muted">가용 병상</span></div>'
-        f'<div class="row">🚑 응급실 {tel(r["er_phone"])}</div>'
-        f'<div class="row">📍 {esc(r["address"])} · <a href="{map_url(r["address"])}" target="_blank">지도</a></div>'
-        f'<div class="muted">갱신 {when}</div>'
-        f'</div>'
+        '<div class="card">'
+        '<div class="c-head"><div>'
+        f'<div class="c-name">{esc(r["hospital_name"])}</div>'
+        f'<div class="c-sub">{esc(r["region"])} · {esc(r["hospital_type"])}</div>'
+        '</div>'
+        f'<span class="pill p-{lv}"><i></i>{LEVEL_TXT[lv]}</span></div>'
+        '<div class="beds">'
+        f'<div class="n n-{lv}">{beds}</div>'
+        '<div class="bw"><div class="l">가용 병상</div>'
+        f'<div class="bar"><span class="f-{lv}" style="width:{pct:.0f}%"></span></div></div>'
+        '</div>'
+        f'<div class="meta">📍 {esc(r["address"])}</div>'
+        f'<div class="chips">{funeral}</div>'
+        '<div class="acts">'
+        + call_btn(r["er_phone"], "🚑 응급실 전화", "r")
+        + act("🗺 길찾기", map_link(r["address"]), "", True)
+        + '</div>'
+        f'<div class="{foot_cls}">{foot}</div>'
+        '</div>'
     )
 
 
-def hospital_card(r: dict, now, is_holiday: bool) -> str:
-    has_er = r["er_id"] is not None and not pd.isna(r["er_id"])
-    beds = int(r["available_beds"])
-    if not has_er:
-        cls, er_badge = "none", '<span class="badge b-gray">응급실 미운영</span>'
-    elif r["er_status"] == "운영중" and beds > 0:
-        cls, er_badge = "ok", f'<span class="badge b-ok">응급실 {beds}병상</span>'
+def hospital_inner(r, now, is_holiday) -> str:
+    if r["has_er"]:
+        lv = bed_level(r)
+        er_pill = f'<span class="pill p-{lv}"><i></i>응급실 {LEVEL_TXT[lv]}</span>'
     else:
-        cls, er_badge = "full", '<span class="badge b-full">응급실 포화</span>'
+        er_pill = '<span class="pill p-off">응급실 없음</span>'
     opened = is_open(r["open_time"], r["close_time"], r["holiday_open"], now, is_holiday)
-    out_badge = ('<span class="badge b-blue">외래 진료중</span>' if opened
-                 else '<span class="badge b-gray">외래 종료</span>')
-    hol = '<span class="badge b-blue">휴일 외래</span>' if r["holiday_open"] == "Y" else ""
-    funeral = '<span class="badge b-gray">장례식장</span>' if r["funeral_hall"] == "Y" else ""
+    out_chip = ('<span class="chip hl">외래 진료중</span>' if opened
+                else '<span class="chip">외래 종료</span>')
+    hol_chip = '<span class="chip hl">휴일 외래</span>' if r["holiday_open"] == "Y" else ""
+    fun_chip = '<span class="chip">장례식장</span>' if r["funeral_hall"] == "Y" else ""
+    depts = "".join(f'<span class="chip">{esc(d)}</span>' for d in r["dept_list"])
+    beds_line = f' · 병상 {r["available_beds"]}개' if r["has_er"] else ""
     return (
-        f'<div class="card {cls}">'
-        f'<h4>{esc(r["hospital_name"])}</h4>'
-        f'{er_badge}{out_badge}{hol}{funeral}'
-        f'<div class="row muted">{esc(r["hospital_type"])} · {esc(r["region"])}</div>'
-        f'<div class="row">🩺 {esc(r["departments"])}</div>'
-        f'<div class="row">🕘 외래 {hhmm(r["open_time"])}~{hhmm(r["close_time"])}</div>'
-        f'<div class="row">{tel(r["phone"])}</div>'
-        f'</div>'
+        '<div class="c-head"><div>'
+        f'<div class="c-name">{esc(r["hospital_name"])}</div>'
+        f'<div class="c-sub">{esc(r["region"])} · {esc(r["hospital_type"])}</div>'
+        f'</div>{er_pill}</div>'
+        f'<div class="chips">{out_chip}{hol_chip}{fun_chip}</div>'
+        f'<div class="chips">{depts}</div>'
+        f'<div class="meta">🕘 외래 {hhmm(r["open_time"])} – {hhmm(r["close_time"])}{beds_line}</div>'
+        '<div class="acts">'
+        + call_btn(r["phone"], "📞 대표전화", "p")
+        + act("🗺 길찾기", map_link(r["address"]), "", True)
+        + '</div>'
     )
 
 
-def pharmacy_card(r: dict, now, is_holiday: bool) -> str:
+def pharmacy_card(r, now, is_holiday) -> str:
     opened = is_open(r["open_time"], r["close_time"], r["holiday_open"], now, is_holiday)
-    cls = "ok" if opened else "none"
-    state = ('<span class="badge b-ok">지금 영업중</span>' if opened
-             else '<span class="badge b-gray">영업 종료</span>')
-    hol = ('<span class="badge b-blue">휴일 운영</span>' if r["holiday_open"] == "Y"
-           else '<span class="badge b-gray">휴일 휴무</span>')
-    night = '<span class="badge b-amber">야간 운영</span>' if (
-        r["close_time"] is not None and r["close_time"].strftime("%H:%M") >= "22:00") else ""
-    return (
-        f'<div class="card {cls}">'
-        f'<h4>{esc(r["pharmacy_name"])}</h4>'
-        f'{state}{hol}{night}'
-        f'<div class="row">🕘 {hhmm(r["open_time"])} ~ {hhmm(r["close_time"])}</div>'
-        f'<div class="row">{tel(r["phone"])}</div>'
-        f'<div class="row">📍 {esc(r["address"])} · <a href="{map_url(r["address"])}" target="_blank">지도</a></div>'
-        f'<div class="muted">{esc(r["region"])}</div>'
-        f'</div>'
-    )
-
-
-# ---------------------------------------------------------------------
-# 탭 1: 응급실
-# ---------------------------------------------------------------------
-def tab_er(now):
-    city, dist = region_filter("hospital", "er")
-    c1, c2 = st.columns(2)
-    only_ok = c1.toggle("수용 가능한 응급실만", value=True, key="er_ok")
-    sort = c2.selectbox("정렬", ["가용 병상 많은 순", "최근 갱신 순", "병원명 순"], key="er_sort")
-
-    where, params = [], {}
-    region_where("h", city, dist, where, params)
-    if only_ok:
-        where.append("e.status = '운영중' AND e.available_beds > 0")
-    order = {
-        "가용 병상 많은 순": " ORDER BY e.available_beds DESC, e.update_time DESC",
-        "최근 갱신 순": " ORDER BY e.update_time DESC",
-        "병원명 순": " ORDER BY h.hospital_name",
-    }[sort]
-    df = q(with_where(ER_SQL, where) + order, params)
-
-    m1, m2, m3 = st.columns(3)
-    m1.metric("조회된 응급실", f"{len(df)}곳")
-    m2.metric("수용 가능", f"{int(((df['status'] == '운영중') & (df['available_beds'] > 0)).sum())}곳")
-    m3.metric("가용 병상 합계", f"{int(df['available_beds'].sum())}개")
-
-    grid([er_card(r, now) for r in df.to_dict("records")])
-    st.caption("병상 수는 실시간 변동될 수 있으니 방문 전 응급실 직통 전화로 꼭 확인하세요.")
-
-
-# ---------------------------------------------------------------------
-# 탭 2: 병원 검색 + 상세
-# ---------------------------------------------------------------------
-def tab_hospital(now, is_holiday):
-    city, dist = region_filter("hospital", "hos")
-    depts = q("SELECT dept_name FROM department ORDER BY dept_id")["dept_name"].tolist()
-
-    c1, c2 = st.columns([2, 1])
-    kw = c1.text_input("병원명 검색", placeholder="예: 서울대, 성모", key="hos_kw")
-    sel_depts = c2.multiselect("진료과목 (선택한 과목을 모두 진료)", depts, key="hos_dept")
-
-    f1, f2, f3, f4 = st.columns(4)
-    night = f1.checkbox("🌙 야간·휴일 진료 (응급실 또는 휴일 외래)", key="hos_night")
-    open_now = f2.checkbox("지금 외래 진료중", key="hos_open")
-    er_only = f3.checkbox("응급실 있는 곳만", key="hos_er")
-    funeral = f4.checkbox("장례식장 보유", key="hos_fun")
-
-    where, params = [], {}
-    region_where("h", city, dist, where, params)
-    if kw.strip():
-        where.append("h.hospital_name ILIKE :kw")
-        params["kw"] = f"%{kw.strip()}%"
-    if sel_depts:  # N:M 다중 JOIN: 선택 과목을 모두 가진 병원
-        where.append(
-            "h.hospital_id IN (SELECT hd.hospital_id FROM hospital_department hd "
-            "JOIN department d ON d.dept_id = hd.dept_id "
-            "WHERE d.dept_name IN :depts GROUP BY hd.hospital_id "
-            "HAVING COUNT(DISTINCT d.dept_name) = :n)"
-        )
-        params["depts"] = tuple(sel_depts)
-        params["n"] = len(sel_depts)
-    if night:
-        where.append("(e.er_id IS NOT NULL OR h.holiday_open = 'Y')")
-    if er_only:
-        where.append("e.er_id IS NOT NULL")
-    if funeral:
-        where.append("h.funeral_hall = 'Y'")
-    if open_now:
-        where.append("h.open_time <= :now_t AND h.close_time > :now_t")
-        params["now_t"] = now.time()
-        if is_holiday:
-            where.append("h.holiday_open = 'Y'")
-
-    df = q(with_where(HOSPITAL_SQL, where) + " ORDER BY h.region, h.hospital_name", params)
-    st.markdown(f"**검색 결과 {len(df)}곳**")
-    records = df.to_dict("records")
-    grid([hospital_card(r, now, is_holiday) for r in records])
-
-    if records:
-        st.divider()
-        st.subheader("🏥 병원 상세 정보")
-        pick = st.selectbox("병원 선택", records, format_func=lambda r: f'{r["hospital_name"]} ({r["region"]})',
-                            key="hos_pick")
-        hospital_detail(pick, now)
-
-
-def hospital_detail(r: dict, now):
-    has_er = r["er_id"] is not None and not pd.isna(r["er_id"])
-    left, right = st.columns(2)
-    with left:
-        st.markdown(f"### {r['hospital_name']}")
-        st.markdown(
-            f"- **분류**: {r['hospital_type']}\n"
-            f"- **지역**: {r['region']}\n"
-            f"- **주소**: {r['address']}\n"
-            f"- **대표전화**: {tel(r['phone'])}\n"
-            f"- **평일 외래**: {hhmm(r['open_time'])} ~ {hhmm(r['close_time'])}\n"
-            f"- **휴일 외래**: {'진료' if r['holiday_open'] == 'Y' else '휴진'}\n"
-            f"- **장례식장**: {'있음' if r['funeral_hall'] == 'Y' else '없음'}\n"
-            f"- **진료과목**: {r['departments'] or '-'}",
-            unsafe_allow_html=True,
-        )
-        st.link_button("🗺️ 네이버 지도에서 보기", map_url(r["address"]))
-    with right:
-        st.markdown("### 🚑 응급실 현황")
-        if not has_er:
-            st.info("이 병원은 응급실을 운영하지 않습니다. 야간·휴일에는 응급실 운영 병원을 이용하세요.")
+    if opened:
+        left = minutes_left(r["close_time"], now)
+        if left <= 60:
+            pill = '<span class="pill p-low"><i></i>곧 마감</span>'
         else:
-            when, stale = ago(r["update_time"], now)
-            c1, c2 = st.columns(2)
-            c1.metric("운영 상태", r["er_status"])
-            c2.metric("가용 병상", f"{int(r['available_beds'])}개")
-            st.markdown(f"응급실 직통: {tel(r['er_phone'])}", unsafe_allow_html=True)
-            st.caption(f"최종 갱신 {when}" + (" ⚠ 오래된 정보입니다. 전화로 확인하세요." if stale else ""))
-
-
-# ---------------------------------------------------------------------
-# 탭 3: 약국
-# ---------------------------------------------------------------------
-def tab_pharmacy(now, is_holiday):
-    city, dist = region_filter("pharmacy", "ph")
-    kw = st.text_input("약국명 검색", key="ph_kw")
-    f1, f2, f3 = st.columns(3)
-    open_now = f1.checkbox("지금 영업중", key="ph_open")
-    night = f2.checkbox("🌙 야간 운영 (22시 이후)", key="ph_night")
-    hol = f3.checkbox("휴일 운영", value=is_holiday, key="ph_hol")
-
-    where, params = [], {}
-    region_where("p", city, dist, where, params)
-    if kw.strip():
-        where.append("p.pharmacy_name ILIKE :kw")
-        params["kw"] = f"%{kw.strip()}%"
-    if night:
-        where.append("p.close_time >= '22:00:00'")
-    if hol:
-        where.append("p.holiday_open = 'Y'")
-    if open_now:
-        where.append("p.open_time <= :now_t AND p.close_time > :now_t")
-        params["now_t"] = now.time()
-        if is_holiday:
-            where.append("p.holiday_open = 'Y'")
-
-    df = q(with_where(PHARMACY_SQL, where) + " ORDER BY p.close_time DESC, p.pharmacy_name", params)
-    st.markdown(f"**검색 결과 {len(df)}곳**")
-    records = df.to_dict("records")
-    records.sort(key=lambda r: not is_open(r["open_time"], r["close_time"], r["holiday_open"], now, is_holiday))
-    grid([pharmacy_card(r, now, is_holiday) for r in records])
-    st.caption("영업시간은 변동될 수 있으니 방문 전 전화로 확인하세요. (영업중 약국이 먼저 표시됩니다)")
-
-
-# ---------------------------------------------------------------------
-# 탭 4: 병상 관리 (실시간 UPDATE / UPSERT 시연)
-# ---------------------------------------------------------------------
-def tab_admin():
-    pw = st.secrets.get("ADMIN_PASSWORD")
-    if not pw:
-        st.info("secrets에 ADMIN_PASSWORD를 설정하면 병상 수를 직접 갱신하는 관리 기능을 쓸 수 있습니다.")
-        return
-    if st.text_input("관리자 비밀번호", type="password", key="adm_pw") != pw:
-        st.caption("비밀번호를 입력하세요.")
-        return
-
-    df = q(ER_SQL + " ORDER BY h.hospital_id")
-    pick = st.selectbox("응급실 선택", df.to_dict("records"),
-                        format_func=lambda r: f'{r["hospital_name"]} (현재 {int(r["available_beds"])}병상, {r["status"]})')
-    hid = int(pick["hospital_id"])
-
-    status_case = ("status = CASE WHEN GREATEST(available_beds + :d, 0) = 0 THEN '포화' ELSE '운영중' END")
-    c1, c2, c3 = st.columns(3)
-    if c1.button("➖ 환자 1명 입실 (병상 -1)", use_container_width=True):
-        execute(f"UPDATE emergencyroom SET {status_case}, available_beds = GREATEST(available_beds + :d, 0), "
-                "update_time = NOW() WHERE hospital_id = :hid", {"d": -1, "hid": hid})
-        st.rerun()
-    if c2.button("➕ 환자 1명 퇴실 (병상 +1)", use_container_width=True):
-        execute(f"UPDATE emergencyroom SET {status_case}, available_beds = GREATEST(available_beds + :d, 0), "
-                "update_time = NOW() WHERE hospital_id = :hid", {"d": 1, "hid": hid})
-        st.rerun()
-    with c3:
-        beds = st.number_input("병상 수 직접 입력", min_value=0, max_value=200,
-                               value=int(pick["available_beds"]), step=1)
-        if st.button("💾 저장", use_container_width=True):
-            execute("UPDATE emergencyroom SET available_beds = :b, "
-                    "status = CASE WHEN :b = 0 THEN '포화' ELSE '운영중' END, "
-                    "update_time = NOW() WHERE hospital_id = :hid", {"b": int(beds), "hid": hid})
-            st.rerun()
-    st.caption("저장 즉시 DB에 반영되며, 응급실 탭에서 확인할 수 있습니다.")
-
-
-# ---------------------------------------------------------------------
-# 메인
-# ---------------------------------------------------------------------
-def main():
-    st.markdown(CSS, unsafe_allow_html=True)
-    now = datetime.now(KST)
-
-    st.markdown(
-        '<div class="emg"><span class="big">🚨 응급상황이면 지금 바로 119</span>'
-        '<span>📞 <a href="tel:119">119 신고</a> · <a href="tel:1339">1339 응급의료정보센터</a> · '
-        '<a href="tel:109">109 자살예방상담</a></span></div>',
-        unsafe_allow_html=True,
+            pill = '<span class="pill p-ok"><i></i>영업중</span>'
+        sub = f"마감까지 {fmt_left(left)}"
+    else:
+        pill = '<span class="pill p-off">영업 종료</span>'
+        sub = "지금은 영업시간이 아니에요" if not is_holiday or r["holiday_open"] == "Y" else "휴일에는 쉬어요"
+    hol = ('<span class="chip hl">휴일 운영</span>' if r["holiday_open"] == "Y"
+           else '<span class="chip">휴일 휴무</span>')
+    night = ('<span class="chip am">🌙 야간 영업</span>'
+             if r["close_time"] is not None and r["close_time"] >= time(22, 0) else "")
+    return (
+        '<div class="card">'
+        '<div class="c-head"><div>'
+        f'<div class="c-name">{esc(r["pharmacy_name"])}</div>'
+        f'<div class="c-sub">{esc(r["region"])}</div></div>{pill}</div>'
+        f'<div class="beds"><div class="n n-ok" style="font-size:1.35rem;min-width:0">'
+        f'{hhmm(r["open_time"])} – {hhmm(r["close_time"])}</div></div>'
+        f'<div class="meta">{sub}</div>'
+        f'<div class="chips">{hol}{night}</div>'
+        f'<div class="meta">📍 {esc(r["address"])}</div>'
+        '<div class="acts">'
+        + call_btn(r["phone"], "📞 전화", "p")
+        + act("🗺 길찾기", map_link(r["address"]), "", True)
+        + '</div></div>'
     )
 
-    h1, h2, h3 = st.columns([3, 2, 1])
-    h1.title("🏥 병원·응급실·약국 찾기")
-    is_holiday = h2.toggle("오늘은 휴일(공휴일 포함)", value=now.weekday() >= 5)
-    h2.caption(f"현재 {now:%Y-%m-%d %H:%M} (KST)")
-    if h3.button("🔄 새로고침", use_container_width=True):
+
+# =====================================================================
+# 병원 상세 팝업
+# =====================================================================
+def hospital_dialog(r, now, is_holiday):
+    @st.dialog(r["hospital_name"], width="large")
+    def _show():
+        opened = is_open(r["open_time"], r["close_time"], r["holiday_open"], now, is_holiday)
+        out = ('<span class="pill p-blue">외래 진료중</span>' if opened
+               else '<span class="pill p-off">외래 종료</span>')
+        md(f'<div class="c-sub" style="margin-bottom:8px">{esc(r["hospital_type"])} · {esc(r["region"])} &nbsp; {out}</div>')
+
+        left, right = st.columns(2)
+        with left:
+            depts = "".join(f'<span class="chip hl">{esc(d)}</span>' for d in r["dept_list"]) or "-"
+            md(
+                '<div class="box"><div class="sec" style="margin-top:0">기본 정보</div><div class="dl">'
+                f'<div class="k">주소</div><div class="v">{esc(r["address"])}</div>'
+                f'<div class="k">대표전화</div><div class="v">{esc(r["phone"]) or "-"}</div>'
+                f'<div class="k">평일 외래</div><div class="v">{hhmm(r["open_time"])} – {hhmm(r["close_time"])}</div>'
+                f'<div class="k">휴일 외래</div><div class="v">{"진료" if r["holiday_open"] == "Y" else "휴진"}</div>'
+                f'<div class="k">장례식장</div><div class="v">{"있음" if r["funeral_hall"] == "Y" else "없음"}</div>'
+                f'</div><div class="flabel">진료과목</div><div class="chips">{depts}</div></div>'
+            )
+        with right:
+            if r["has_er"]:
+                lv = bed_level(r)
+                when, stale = ago(r["update_time"], now)
+                warn = '<div class="foot stale">⚠ 오래된 정보예요. 전화로 확인하세요.</div>' if stale else ""
+                pct = min(r["available_beds"] / BED_BAR_MAX * 100, 100)
+                md(
+                    '<div class="box"><div class="sec" style="margin-top:0">🚑 응급실 현황</div>'
+                    f'<span class="pill p-{lv}"><i></i>{LEVEL_TXT[lv]}</span>'
+                    '<div class="beds">'
+                    f'<div class="n n-{lv}">{r["available_beds"]}</div>'
+                    f'<div class="bw"><div class="l">가용 병상</div><div class="bar"><span class="f-{lv}" style="width:{pct:.0f}%"></span></div></div></div>'
+                    f'<div class="meta">응급실 직통 <b>{esc(r["er_phone"]) or "-"}</b></div>'
+                    f'<div class="foot">{when} 갱신</div>{warn}'
+                    '<div class="acts">' + call_btn(r["er_phone"], "🚑 응급실 전화", "r") + '</div></div>'
+                )
+            else:
+                md('<div class="box"><div class="sec" style="margin-top:0">🚑 응급실 현황</div>'
+                   '<div class="meta">이 병원은 응급실을 운영하지 않아요.<br>'
+                   '야간·휴일에는 응급실 운영 병원을 이용하세요.</div></div>')
+        md('<div class="acts">' + call_btn(r["phone"], "📞 대표전화", "p")
+           + act("🗺 네이버 지도에서 보기", map_link(r["address"]), "", True) + '</div>')
+
+    _show()
+
+
+# =====================================================================
+# 히어로 + KPI (30초마다 자동 갱신)
+# =====================================================================
+@st.fragment(run_every=30)
+def hero():
+    now = datetime.now(KST)
+    is_holiday = st.session_state.get("is_holiday", now.weekday() >= 5)
+    ers = er_data()
+    pharm = pharmacy_data()
+
+    ok_n = sum(1 for r in ers if bed_level(r) in ("ok", "low"))
+    full_n = sum(1 for r in ers if bed_level(r) == "full")
+    beds = sum(r["available_beds"] for r in ers)
+    ph_open = sum(1 for r in pharm if is_open(r["open_time"], r["close_time"], r["holiday_open"], now, is_holiday))
+    wd = "월화수목금토일"[now.weekday()]
+
+    md(
+        '<div class="hero">'
+        f'<div class="hero-top"><div class="brand">🏥 {BRAND}</div>'
+        f'<div class="live"><i></i>LIVE · {now.month}월 {now.day}일 ({wd}) {now:%H:%M}</div></div>'
+        '<div class="h1">지금 문 연 병원·응급실·약국,<br>한 곳에서 바로 찾으세요</div>'
+        '<div class="sub">야간·휴일·응급상황에도 가까운 의료기관을 빠르게 확인할 수 있어요.</div>'
+        '<div class="hero-actions">'
+        '<a class="btn btn-red" href="tel:119">🚨 119 응급신고</a>'
+        '<a class="btn btn-ghost" href="tel:1339">📞 1339 응급의료정보센터</a>'
+        '</div></div>'
+        '<div class="kpis">'
+        f'<div class="kpi green"><div class="kl">수용 가능 응급실</div><div class="kv">{ok_n}<small> / {len(ers)}곳</small></div><div class="ks">병상이 남아 있는 곳</div></div>'
+        f'<div class="kpi"><div class="kl">가용 병상 합계</div><div class="kv">{beds}<small> 개</small></div><div class="ks">전체 응급실 기준</div></div>'
+        f'<div class="kpi red"><div class="kl">포화 응급실</div><div class="kv">{full_n}<small> 곳</small></div><div class="ks">방문 전 전화 필수</div></div>'
+        f'<div class="kpi"><div class="kl">지금 영업중 약국</div><div class="kv">{ph_open}<small> / {len(pharm)}곳</small></div><div class="ks">{"휴일" if is_holiday else "평일"} 기준</div></div>'
+        '</div>'
+    )
+
+
+# =====================================================================
+# 탭 1: 응급실 (30초마다 자동 갱신)
+# =====================================================================
+@st.fragment(run_every=30)
+def tab_er():
+    now = datetime.now(KST)
+    rows = er_data()
+
+    with st.container(key="panel_er"):
+        city, dist = region_ui(rows, "er")
+        c1, c2 = st.columns([1, 1])
+        only_ok = c1.toggle("수용 가능한 응급실만 보기", value=True, key="er_ok")
+        sort = c2.selectbox("정렬", ["가용 병상 많은 순", "최근 갱신 순", "병원명 순"],
+                            key="er_sort", label_visibility="collapsed")
+
+    view = [r for r in rows if in_region(r, city, dist)
+            and (not only_ok or bed_level(r) in ("ok", "low"))]
+    if sort == "가용 병상 많은 순":
+        view.sort(key=lambda r: (-r["available_beds"], r["hospital_name"]))
+    elif sort == "최근 갱신 순":
+        view.sort(key=lambda r: r["update_time"] or now, reverse=True)
+    else:
+        view.sort(key=lambda r: r["hospital_name"])
+
+    md(f'<div class="count"><b>{len(view)}곳</b> · 가용 병상 합계 <b>{sum(r["available_beds"] for r in view)}개</b> '
+       '· 30초마다 자동 갱신</div>')
+    grid([er_card(r, now) for r in view])
+
+    if view:
+        with st.expander("📋 표로 보기 (INNER JOIN 결과)"):
+            df = pd.DataFrame([{
+                "병원": r["hospital_name"], "지역": r["region"], "상태": r["status"],
+                "가용 병상": r["available_beds"], "응급실 전화": r["er_phone"],
+                "갱신": ago(r["update_time"], now)[0],
+            } for r in view])
+            st.dataframe(df, hide_index=True, use_container_width=True,
+                         column_config={"가용 병상": st.column_config.ProgressColumn(
+                             "가용 병상", min_value=0, max_value=BED_BAR_MAX, format="%d")})
+    st.caption("병상 수는 수시로 변동돼요. 방문 전 응급실 직통 전화로 꼭 확인하세요.")
+
+
+# =====================================================================
+# 탭 2: 병원 찾기
+# =====================================================================
+def tab_hospital(now, is_holiday):
+    rows = hospital_data()
+    all_depts = sorted({d for r in rows for d in r["dept_list"]})
+
+    with st.container(key="panel_hos"):
+        kw = st.text_input("병원명 검색", placeholder="🔍 병원 이름으로 검색 (예: 서울대, 성모)",
+                           key="hos_kw", label_visibility="collapsed")
+        city, dist = region_ui(rows, "hos")
+        md('<div class="flabel">진료과목 (선택한 과목을 모두 진료하는 병원)</div>')
+        depts = st.pills("진료과목", all_depts, selection_mode="multi", key="hos_dept",
+                         label_visibility="collapsed") or []
+        t1, t2, t3, t4 = st.columns(4)
+        night = t1.toggle("🌙 야간·휴일 진료", key="hos_night",
+                          help="24시간 응급실이 있거나 휴일 외래를 진료하는 병원")
+        open_now = t2.toggle("지금 외래 진료중", key="hos_open")
+        er_only = t3.toggle("응급실 있는 곳", key="hos_er")
+        funeral = t4.toggle("장례식장 보유", key="hos_fun")
+
+    view = []
+    for r in rows:
+        if not in_region(r, city, dist):
+            continue
+        if kw.strip() and kw.strip().lower() not in r["hospital_name"].lower():
+            continue
+        if depts and not set(depts) <= set(r["dept_list"]):
+            continue
+        if night and not (r["has_er"] or r["holiday_open"] == "Y"):
+            continue
+        if er_only and not r["has_er"]:
+            continue
+        if funeral and r["funeral_hall"] != "Y":
+            continue
+        if open_now and not is_open(r["open_time"], r["close_time"], r["holiday_open"], now, is_holiday):
+            continue
+        view.append(r)
+    view.sort(key=lambda r: (bed_level(r) == "full" if r["has_er"] else True, r["region"], r["hospital_name"]))
+
+    md(f'<div class="count">검색 결과 <b>{len(view)}곳</b></div>')
+    if not view:
+        empty()
+        return
+
+    per_row = 3
+    for i in range(0, len(view), per_row):
+        cols = st.columns(per_row)
+        for col, r in zip(cols, view[i:i + per_row]):
+            with col:
+                with st.container(key=f"hc_{r['hospital_id']}"):
+                    md(hospital_inner(r, now, is_holiday))
+                    if st.button("상세 정보 보기", key=f"hb_{r['hospital_id']}", use_container_width=True):
+                        hospital_dialog(r, now, is_holiday)
+
+
+# =====================================================================
+# 탭 3: 약국
+# =====================================================================
+def tab_pharmacy(now, is_holiday):
+    rows = pharmacy_data()
+    with st.container(key="panel_ph"):
+        kw = st.text_input("약국명 검색", placeholder="🔍 약국 이름으로 검색",
+                           key="ph_kw", label_visibility="collapsed")
+        city, dist = region_ui(rows, "ph")
+        t1, t2, t3 = st.columns(3)
+        open_now = t1.toggle("지금 영업중", key="ph_open")
+        night = t2.toggle("🌙 야간 영업 (22시 이후)", key="ph_night")
+        hol_only = t3.toggle("휴일 운영", value=is_holiday, key="ph_hol")
+
+    view = []
+    for r in rows:
+        if not in_region(r, city, dist):
+            continue
+        if kw.strip() and kw.strip().lower() not in r["pharmacy_name"].lower():
+            continue
+        if night and not (r["close_time"] is not None and r["close_time"] >= time(22, 0)):
+            continue
+        if hol_only and r["holiday_open"] != "Y":
+            continue
+        if open_now and not is_open(r["open_time"], r["close_time"], r["holiday_open"], now, is_holiday):
+            continue
+        view.append(r)
+    view.sort(key=lambda r: (not is_open(r["open_time"], r["close_time"], r["holiday_open"], now, is_holiday),
+                             r["region"], r["pharmacy_name"]))
+
+    md(f'<div class="count">검색 결과 <b>{len(view)}곳</b> · 영업중인 약국이 먼저 보여요</div>')
+    grid([pharmacy_card(r, now, is_holiday) for r in view])
+    st.caption("영업시간은 변동될 수 있어요. 방문 전 전화로 확인하세요.")
+
+
+# =====================================================================
+# 탭 4: 병상 관리 (UPDATE 시연)
+# =====================================================================
+def tab_admin():
+    md('<div class="sec">병상 관리 (시연용)</div>'
+       '<div class="meta">병상 수를 바꾸면 DB에 즉시 반영되고, 응급실 탭에 실시간으로 보여요.</div>')
+    pw = st.text_input("관리자 비밀번호", type="password", key="adm_pw")
+    if not pw:
+        st.info("비밀번호는 supabase_api_setup.sql 의 update_er_beds 함수에 설정한 값이에요.")
+        return
+
+    rows = sorted(er_data(), key=lambda r: r["hospital_id"])
+    pick = st.selectbox("응급실 선택", rows, key="adm_pick",
+                        format_func=lambda r: f'{r["hospital_name"]} · 현재 {r["available_beds"]}병상 ({r["status"]})')
+
+    def save(beds: int):
+        try:
+            client().rpc("update_er_beds", {"p_hospital_id": int(pick["hospital_id"]),
+                                            "p_beds": int(max(beds, 0)), "p_pw": pw}).execute()
+        except Exception as e:  # noqa: BLE001
+            st.error("저장에 실패했어요. 비밀번호가 맞는지 확인하세요.")
+            st.caption(str(e)[:200])
+            return False
         st.cache_data.clear()
+        return True
+
+    c1, c2, c3 = st.columns(3)
+    done = False
+    if c1.button("➖ 환자 입실 (병상 -1)", use_container_width=True):
+        done = save(pick["available_beds"] - 1)
+    if c2.button("➕ 환자 퇴실 (병상 +1)", use_container_width=True):
+        done = save(pick["available_beds"] + 1)
+    with c3:
+        new_beds = st.number_input("병상 수", min_value=0, max_value=200, value=pick["available_beds"],
+                                   label_visibility="collapsed", key=f"adm_beds_{pick['hospital_id']}")
+        if st.button("💾 이 값으로 저장", use_container_width=True):
+            done = save(new_beds)
+    if done:
+        st.toast("저장했어요 ✅")
         st.rerun()
+
+
+# =====================================================================
+# 탭 5: 서비스 정보
+# =====================================================================
+def tab_info():
+    md('<div class="sec">이 서비스는 이렇게 동작해요</div>'
+       '<div class="meta">Streamlit 화면 → Supabase API(URL + anon key) → PostgreSQL. '
+       'JOIN은 DB의 VIEW로 만들어 두고 화면에서 불러와요.</div>')
+    st.code("""-- 응급실 현황: INNER JOIN
+CREATE VIEW v_er_status AS
+SELECT h.*, e.status, e.available_beds, e.er_phone, e.update_time
+FROM Hospital h INNER JOIN EmergencyRoom e ON h.hospital_id = e.hospital_id;
+
+-- 병원 전체: LEFT JOIN + N:M 다중 JOIN(진료과목 집계)
+CREATE VIEW v_hospital_full AS
+SELECT h.*, COALESCE(e.status,'응급실 미운영') AS er_status, dl.dept_list
+FROM Hospital h
+LEFT JOIN EmergencyRoom e ON h.hospital_id = e.hospital_id
+LEFT JOIN LATERAL (
+  SELECT array_agg(d.dept_name) AS dept_list
+  FROM Hospital_Department hd JOIN Department d ON d.dept_id = hd.dept_id
+  WHERE hd.hospital_id = h.hospital_id) dl ON TRUE;""", language="sql")
+    md('<div class="meta"><b>테이블</b> Hospital · EmergencyRoom(1:1) · Department · '
+       'Hospital_Department(N:M) · Pharmacy</div>')
+
+
+# =====================================================================
+# 메인
+# =====================================================================
+def main():
+    md(CSS)
+    now = datetime.now(KST)
+    st.session_state.setdefault("is_holiday", now.weekday() >= 5)
 
     try:
-        q("SELECT 1 AS ok")
+        fetch("v_er_status")
     except Exception as e:  # noqa: BLE001
-        st.error("데이터베이스에 연결하지 못했습니다. Streamlit secrets의 DATABASE_URL을 확인하세요.")
-        st.code(str(e)[:500])
+        st.error("데이터를 불러오지 못했어요.")
+        st.markdown(
+            "- Streamlit **Secrets**에 `SUPABASE_URL`, `SUPABASE_KEY`가 있는지 확인하세요.\n"
+            "- Supabase SQL Editor에서 `supabase_schema.sql` → `supabase_api_setup.sql` 순서로 실행했는지 확인하세요.\n"
+            "- `Invalid API key` 오류면 Project Settings → API Keys의 **legacy anon key**(eyJ...)를 써 보세요."
+        )
+        st.code(str(e)[:600])
         st.stop()
 
-    t1, t2, t3, t4 = st.tabs(["🚑 응급실", "🏥 병원 검색", "💊 약국", "🔧 병상 관리"])
+    hero()
+
+    c1, c2 = st.columns([3, 2])
+    c1.caption("📍 공휴일은 자동으로 알 수 없어서, 아래 스위치로 직접 켜 주세요. (주말은 자동)")
+    is_holiday = c2.toggle("오늘은 휴일(공휴일 포함)", key="is_holiday")
+
+    t1, t2, t3, t4, t5 = st.tabs(["🚑 응급실", "🏥 병원 찾기", "💊 약국", "🔧 병상 관리", "ℹ️ 정보"])
     with t1:
-        tab_er(now)
+        tab_er()
     with t2:
         tab_hospital(now, is_holiday)
     with t3:
         tab_pharmacy(now, is_holiday)
     with t4:
         tab_admin()
+    with t5:
+        tab_info()
 
-    st.divider()
-    st.caption("※ 본 서비스는 학습(PBL)용 샘플 데이터 기반이며 실제 의료 판단을 대체하지 않습니다. "
-               "실제 응급실 정보는 응급의료포털(e-gen.or.kr)과 119를 이용하세요.")
+    md('<div class="disc">※ 학습(PBL)용 샘플 데이터 기반 서비스이며 실제 의료 판단을 대체하지 않아요.<br>'
+       '실제 응급 상황에서는 즉시 119에 연락하고, 응급실 정보는 응급의료포털(e-gen.or.kr)에서도 확인하세요.</div>')
 
 
 main()
